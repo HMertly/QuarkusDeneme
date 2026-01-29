@@ -25,16 +25,21 @@ public class LogResource {
     DataSource dataSource;
 
     @Inject
-    RestClient restClient; // Quarkus Elasticsearch Client
+    RestClient restClient;
 
     private final ObjectMapper objectMapper = new ObjectMapper();
 
-    // --- CLICKHOUSE: ANA LİSTE ---
+    // --- CLICKHOUSE: SERVER-SIDE PAGINATION ---
     @GET
     @Produces(MediaType.APPLICATION_JSON)
     public List<LogData> getLogs(
             @QueryParam("kaynak") String kaynak,
-            @QueryParam("search") String search) {
+            @QueryParam("search") String search,
+            @QueryParam("page") @DefaultValue("1") int page,   // Sayfa No (Varsayılan 1)
+            @QueryParam("size") @DefaultValue("10") int size) { // Sayfa Başı Kayıt (Varsayılan 10)
+
+        // Offset Hesaplama: (Sayfa - 1) * Adet
+        int offset = (page - 1) * size;
 
         List<LogData> logs = new ArrayList<>();
         StringBuilder sql = new StringBuilder("SELECT * FROM log_data WHERE 1=1");
@@ -46,7 +51,8 @@ public class LogResource {
             sql.append(" AND (mesaj LIKE ? OR sebep LIKE ?)");
         }
 
-        sql.append(" ORDER BY zaman DESC LIMIT 100");
+        // --- DEĞİŞİKLİK BURADA: LIMIT ve OFFSET eklendi ---
+        sql.append(" ORDER BY zaman DESC LIMIT ? OFFSET ?");
 
         try (Connection conn = dataSource.getConnection();
              PreparedStatement stmt = conn.prepareStatement(sql.toString())) {
@@ -60,6 +66,10 @@ public class LogResource {
                 stmt.setString(paramIndex++, searchPattern);
                 stmt.setString(paramIndex++, searchPattern);
             }
+
+            // Limit ve Offset parametrelerini set et
+            stmt.setInt(paramIndex++, size);
+            stmt.setInt(paramIndex++, offset);
 
             try (ResultSet rs = stmt.executeQuery()) {
                 while (rs.next()) {
@@ -79,17 +89,22 @@ public class LogResource {
         return logs;
     }
 
-    // --- ELASTICSEARCH: HIZLI ARAMA ---
+    // --- ELASTICSEARCH: SERVER-SIDE PAGINATION ---
     @GET
     @Path("/search")
     @Produces(MediaType.APPLICATION_JSON)
-    public List<LogData> searchLogs(@QueryParam("term") String term) throws IOException {
+    public List<LogData> searchLogs(
+            @QueryParam("term") String term,
+            @QueryParam("page") @DefaultValue("1") int page,
+            @QueryParam("size") @DefaultValue("10") int size) throws IOException {
+
+        int offset = (page - 1) * size;
         List<LogData> results = new ArrayList<>();
 
-        // Elasticsearch Query DSL
+        // Elasticsearch Query DSL (from ve size eklendi)
         String query = String.format(
-                "{\"query\": {\"multi_match\": {\"query\": \"%s\", \"fields\": [\"mesaj\", \"sebep\", \"kaynak\"]}}}",
-                term
+                "{\"from\": %d, \"size\": %d, \"query\": {\"multi_match\": {\"query\": \"%s\", \"fields\": [\"mesaj\", \"sebep\", \"kaynak\"]}}}",
+                offset, size, term
         );
 
         Request request = new Request("POST", "/logs/_search");
@@ -113,11 +128,12 @@ public class LogResource {
         return results;
     }
 
-    // --- YAZMA İŞLEMİ (NiFi Buraya Gönderiyor) ---
+    // --- YAZMA İŞLEMİ (Aynı kalıyor) ---
     @POST
     @Consumes(MediaType.APPLICATION_JSON)
     @Produces(MediaType.APPLICATION_JSON)
     public Response addLog(LogData log) {
+        // ... (Burası değişmedi, aynı kalacak)
         String sql = "INSERT INTO log_data (id, zaman, kaynak, sebep, mesaj, ip) VALUES (?, ?, ?, ?, ?, ?)";
         try (Connection conn = dataSource.getConnection();
              PreparedStatement ps = conn.prepareStatement(sql)) {

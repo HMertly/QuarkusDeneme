@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Table, Tag, Typography, Card, Space, Button, message, ConfigProvider, theme, Switch, Input } from 'antd';
-import { ReloadOutlined, DesktopOutlined, WifiOutlined, BulbOutlined, BulbFilled, SearchOutlined } from '@ant-design/icons';
+import { ReloadOutlined, DesktopOutlined, WifiOutlined, BulbOutlined, BulbFilled } from '@ant-design/icons';
 import axios from 'axios';
 
 const { Title } = Typography;
@@ -13,14 +13,38 @@ const App = () => {
     const [isDarkMode, setIsDarkMode] = useState(false);
     const [searchMode, setSearchMode] = useState('ClickHouse');
 
-    // ClickHouse'dan veri çeken ana fonksiyon
-    const fetchLogs = async () => {
+    // YENİ: Sayfalama Durumu (State)
+    const [pagination, setPagination] = useState({
+        current: 1,
+        pageSize: 10,
+        total: 1000 // Not: Gerçek total count için ayrı bir sorgu gerekir, şimdilik statik veriyoruz.
+    });
+    const [searchTerm, setSearchTerm] = useState(null); // Arama terimini tutalım
+
+    // Veri Çeken Ortak Fonksiyon (Hem Liste Hem Arama İçin)
+    const fetchData = async (page = 1, pageSize = 10, term = null) => {
         setLoading(true);
-        setSearchMode('ClickHouse');
         try {
-            const response = await axios.get('http://localhost:8080/api/logs');
+            let url = '';
+            // Arama var mı yok mu kontrolü
+            if (term) {
+                setSearchMode('Elasticsearch');
+                url = `http://localhost:8080/api/logs/search?term=${term}&page=${page}&size=${pageSize}`;
+            } else {
+                setSearchMode('ClickHouse');
+                url = `http://localhost:8080/api/logs?page=${page}&size=${pageSize}`;
+            }
+
+            const response = await axios.get(url);
             setLogs(response.data);
-            message.info('ClickHouse verileri listelendi.');
+
+            // Sayfalama bilgisini güncelle
+            setPagination({
+                ...pagination,
+                current: page,
+                pageSize: pageSize
+            });
+
         } catch (error) {
             message.error('Veri çekilemedi!');
         } finally {
@@ -28,37 +52,29 @@ const App = () => {
         }
     };
 
-    // Elasticsearch üzerinden arama yapan fonksiyon
-    const onSearch = async (value) => {
-        if (!value) {
-            fetchLogs();
-            return;
-        }
-        setLoading(true);
-        setSearchMode('Elasticsearch');
-        try {
-            const response = await axios.get(`http://localhost:8080/api/logs/search?term=${value}`);
-            setLogs(response.data);
-            message.success(`${response.data.length} sonuç Elasticsearch ile saniyeler içinde bulundu!`);
-        } catch (error) {
-            message.error('Elasticsearch araması başarısız!');
-        } finally {
-            setLoading(false);
-        }
-    };
-
+    // İlk açılışta veriyi çek
     useEffect(() => {
-        fetchLogs();
+        fetchData(1, 10, null);
     }, []);
 
+    // Tablo sayfa değişimi tetiklendiğinde çalışır
+    const handleTableChange = (newPagination) => {
+        fetchData(newPagination.current, newPagination.pageSize, searchTerm);
+    };
+
+    // Arama yapıldığında
+    const onSearch = (value) => {
+        setSearchTerm(value); // Arama terimini kaydet
+        fetchData(1, 10, value); // 1. sayfadan aramayı başlat
+    };
+
+    // Yenile butonu
+    const onReload = () => {
+        fetchData(pagination.current, pagination.pageSize, searchTerm);
+    };
+
     const columns = [
-        {
-            title: 'Zaman',
-            dataIndex: 'zaman',
-            key: 'zaman',
-            width: 180,
-            sorter: (a, b) => new Date(a.zaman) - new Date(b.zaman),
-        },
+        { title: 'Zaman', dataIndex: 'zaman', key: 'zaman', width: 180 },
         {
             title: 'Kaynak',
             dataIndex: 'kaynak',
@@ -79,38 +95,25 @@ const App = () => {
                 return <Tag color={color}>{text}</Tag>;
             },
         },
-        {
-            title: 'Mesaj',
-            dataIndex: 'mesaj',
-            key: 'mesaj',
-        },
-        {
-            title: 'IP Adresi',
-            dataIndex: 'ip',
-            key: 'ip',
-        },
+        { title: 'Mesaj', dataIndex: 'mesaj', key: 'mesaj' },
+        { title: 'IP Adresi', dataIndex: 'ip', key: 'ip' },
     ];
 
     return (
         <ConfigProvider theme={{ algorithm: isDarkMode ? darkAlgorithm : defaultAlgorithm }}>
-            <div style={{
-                padding: '30px',
-                backgroundColor: isDarkMode ? '#141414' : '#f0f2f5',
-                minHeight: '100vh',
-                transition: 'all 0.3s'
-            }}>
+            <div style={{ padding: '30px', backgroundColor: isDarkMode ? '#141414' : '#f0f2f5', minHeight: '100vh' }}>
                 <Card bordered={false} style={{ boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}>
                     <Space style={{ marginBottom: 20, justifyContent: 'space-between', width: '100%' }}>
                         <Space direction="vertical" size={0}>
                             <Title level={3} style={{ margin: 0 }}>Log İzleme Paneli</Title>
                             <Typography.Text type="secondary">
-                                Şu anki veri kaynağı: <Tag color="orange">{searchMode}</Tag>
+                                Kaynak: <Tag color="orange">{searchMode}</Tag>
                             </Typography.Text>
                         </Space>
 
                         <Space size="large">
                             <Search
-                                placeholder="Elasticsearch ile hızlı ara..."
+                                placeholder="Elasticsearch ile ara..."
                                 allowClear
                                 enterButton="Ara"
                                 size="large"
@@ -126,10 +129,10 @@ const App = () => {
                             <Button
                                 type="default"
                                 icon={<ReloadOutlined />}
-                                onClick={fetchLogs}
+                                onClick={onReload}
                                 loading={loading}
                             >
-                                Listeyi Yenile
+                                Yenile
                             </Button>
                         </Space>
                     </Space>
@@ -139,7 +142,9 @@ const App = () => {
                         dataSource={logs}
                         rowKey="id"
                         loading={loading}
-                        pagination={{ pageSize: 10 }}
+                        // Pagination ayarları güncellendi
+                        pagination={pagination}
+                        onChange={handleTableChange} // Sayfa değişimini dinle
                         bordered
                         scroll={{ x: 800 }}
                     />
