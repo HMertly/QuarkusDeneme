@@ -2,6 +2,8 @@ package com.quarkusproject.repository;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.quarkusproject.dto.LogData;
 import com.quarkusproject.dto.StatDTO;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -9,6 +11,7 @@ import jakarta.inject.Inject;
 import org.elasticsearch.client.Request;
 import org.elasticsearch.client.Response;
 import org.elasticsearch.client.RestClient;
+import org.jboss.logging.Logger; // Quarkus Logger
 
 import javax.sql.DataSource;
 import java.io.IOException;
@@ -22,6 +25,9 @@ import java.util.UUID;
 
 @ApplicationScoped
 public class LogRepository {
+
+    // PROFESYONEL LOGGING (Madde E Çözümü)
+    private static final Logger LOG = Logger.getLogger(LogRepository.class);
 
     @Inject
     DataSource dataSource;
@@ -40,7 +46,8 @@ public class LogRepository {
              ResultSet rs = ps.executeQuery()) {
             if (rs.next()) return rs.getLong(1);
         } catch (SQLException e) {
-            e.printStackTrace();
+            LOG.error("ClickHouse count sorgusunda hata", e);
+            // Hata fırlatmıyoruz, 0 dönüyoruz (Tercihe bağlı)
         }
         return 0;
     }
@@ -59,7 +66,8 @@ public class LogRepository {
                 }
             }
         } catch (SQLException e) {
-            e.printStackTrace();
+            LOG.error("ClickHouse veri çekme hatası", e);
+            throw new RuntimeException("Veritabanı hatası", e); // Servis katmanı yakalasın diye
         }
         return logs;
     }
@@ -75,6 +83,10 @@ public class LogRepository {
             ps.setString(5, log.mesaj());
             ps.setString(6, log.ip());
             ps.executeUpdate();
+            LOG.infof("Yeni log kaydedildi: %s", log.id());
+        } catch (SQLException e) {
+            LOG.error("Log kaydetme hatası", e);
+            throw e; // Controller yakalasın
         }
     }
 
@@ -90,38 +102,64 @@ public class LogRepository {
                 stats.add(new StatDTO(rs.getString(field), rs.getLong("toplam")));
             }
         } catch (SQLException e) {
-            e.printStackTrace();
+            LOG.error("İstatistik hatası: " + field, e);
         }
         return stats;
     }
 
     // --- ELASTICSEARCH İŞLEMLERİ ---
 
+    // GÜVENLİ QUERY OLUŞTURMA (Madde C Çözümü)
     public ElasticResult searchInElastic(String term, int limit, int offset) throws IOException {
         List<LogData> results = new ArrayList<>();
-        String query = String.format(
-                "{\"from\": %d, \"size\": %d, \"track_total_hits\": true, \"query\": {\"multi_match\": {\"query\": \"%s\", \"fields\": [\"mesaj\", \"sebep\", \"kaynak\"]}}}",
-                offset, limit, term
-        );
+
+        // String.format yerine ObjectNode kullanıyoruz.
+        // Bu sayede "term" içinde tırnak işareti olsa bile Jackson onu escape eder.
+        ObjectNode queryRoot = objectMapper.createObjectNode();
+        queryRoot.put("from", offset);
+        queryRoot.put("size", limit);
+        queryRoot.put("track_total_hits", true);
+
+        ObjectNode multiMatch = objectMapper.createObjectNode();
+        multiMatch.put("query", term);
+
+        ArrayNode fields = multiMatch.putArray("fields");
+        fields.add("mesaj").add("sebep").add("kaynak");
+
+        queryRoot.putObject("query").set("multi_match", multiMatch);
+
+        // Oluşan JSON: {"from":0, "size":10, "query": { "multi_match": { "query": "aranan kelime", ... }}}
+        String jsonQuery = objectMapper.writeValueAsString(queryRoot);
 
         Request request = new Request("POST", "/logs/_search");
-        request.setJsonEntity(query);
-        Response response = restClient.performRequest(request);
-        JsonNode rootNode = objectMapper.readTree(response.getEntity().getContent());
+        request.setJsonEntity(jsonQuery);
 
-        long total = rootNode.path("hits").path("total").path("value").asLong();
-        JsonNode hits = rootNode.path("hits").path("hits");
+        try {
+            Response response = restClient.performRequest(request);
+            JsonNode rootNode = objectMapper.readTree(response.getEntity().getContent());
 
-        for (JsonNode hit : hits) {
-            results.add(mapJsonToLog(hit.path("_source")));
+            long total = rootNode.path("hits").path("total").path("value").asLong();
+            JsonNode hits = rootNode.path("hits").path("hits");
+
+            for (JsonNode hit : hits) {
+                results.add(mapJsonToLog(hit.path("_source")));
+            }
+            return new ElasticResult(results, total);
+        } catch (IOException e) {
+            LOG.error("Elasticsearch arama hatası: " + term, e);
+            throw e;
         }
-        return new ElasticResult(results, total);
     }
 
     public LogData findByIdInElastic(String id) throws IOException {
-        String query = String.format("{\"query\": {\"term\": {\"id.keyword\": \"%s\"}}}", id);
+        // Güvenli ID sorgusu
+        ObjectNode queryRoot = objectMapper.createObjectNode();
+        queryRoot.putObject("query").putObject("term").put("id.keyword", id);
+
+        String jsonQuery = objectMapper.writeValueAsString(queryRoot);
+
         Request request = new Request("POST", "/logs/_search");
-        request.setJsonEntity(query);
+        request.setJsonEntity(jsonQuery);
 
         Response response = restClient.performRequest(request);
         JsonNode rootNode = objectMapper.readTree(response.getEntity().getContent());
@@ -157,6 +195,5 @@ public class LogRepository {
         );
     }
 
-    // Repository içinde kullanılan mini bir DTO (Helper)
     public record ElasticResult(List<LogData> logs, long total) {}
 }
