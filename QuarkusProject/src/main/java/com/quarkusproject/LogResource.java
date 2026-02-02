@@ -29,49 +29,40 @@ public class LogResource {
 
     private final ObjectMapper objectMapper = new ObjectMapper();
 
-    // --- CLICKHOUSE: SERVER-SIDE PAGINATION ---
+    // --- CLICKHOUSE: LISTELEME VE SAYFALAMA ---
     @GET
     @Produces(MediaType.APPLICATION_JSON)
-    public List<LogData> getLogs(
+    public LogResponse getLogs(
             @QueryParam("kaynak") String kaynak,
             @QueryParam("search") String search,
-            @QueryParam("page") @DefaultValue("1") int page,   // Sayfa No (Varsayılan 1)
-            @QueryParam("size") @DefaultValue("10") int size) { // Sayfa Başı Kayıt (Varsayılan 10)
+            @QueryParam("page") @DefaultValue("1") int page,
+            @QueryParam("size") @DefaultValue("10") int size) {
 
-        // Offset Hesaplama: (Sayfa - 1) * Adet
         int offset = (page - 1) * size;
-
         List<LogData> logs = new ArrayList<>();
-        StringBuilder sql = new StringBuilder("SELECT * FROM log_data WHERE 1=1");
+        long totalCount = 0;
 
-        if (kaynak != null && !kaynak.isEmpty()) {
-            sql.append(" AND kaynak = ?");
-        }
-        if (search != null && !search.isEmpty()) {
-            sql.append(" AND (mesaj LIKE ? OR sebep LIKE ?)");
-        }
+        // İki sorgu hazırlıyoruz: Biri sayım için, biri veri için
+        String countSql = "SELECT count() FROM log_data WHERE 1=1";
+        StringBuilder dataSql = new StringBuilder("SELECT * FROM log_data WHERE 1=1");
 
-        // --- DEĞİŞİKLİK BURADA: LIMIT ve OFFSET eklendi ---
-        sql.append(" ORDER BY zaman DESC LIMIT ? OFFSET ?");
+        // (İleride filtre eklemek istersen buraya AND koşullarını ekleyebilirsin)
 
-        try (Connection conn = dataSource.getConnection();
-             PreparedStatement stmt = conn.prepareStatement(sql.toString())) {
+        dataSql.append(" ORDER BY zaman DESC LIMIT ? OFFSET ?");
 
-            int paramIndex = 1;
-            if (kaynak != null && !kaynak.isEmpty()) {
-                stmt.setString(paramIndex++, kaynak);
-            }
-            if (search != null && !search.isEmpty()) {
-                String searchPattern = "%" + search + "%";
-                stmt.setString(paramIndex++, searchPattern);
-                stmt.setString(paramIndex++, searchPattern);
+        try (Connection conn = dataSource.getConnection()) {
+            // 1. Toplam Kayıt Sayısını Al
+            try (PreparedStatement psCount = conn.prepareStatement(countSql)) {
+                ResultSet rsCount = psCount.executeQuery();
+                if (rsCount.next()) totalCount = rsCount.getLong(1);
             }
 
-            // Limit ve Offset parametrelerini set et
-            stmt.setInt(paramIndex++, size);
-            stmt.setInt(paramIndex++, offset);
+            // 2. Sayfalanmış Veriyi Al
+            try (PreparedStatement stmt = conn.prepareStatement(dataSql.toString())) {
+                stmt.setInt(1, size);
+                stmt.setInt(2, offset);
 
-            try (ResultSet rs = stmt.executeQuery()) {
+                ResultSet rs = stmt.executeQuery();
                 while (rs.next()) {
                     logs.add(new LogData(
                             UUID.fromString(rs.getString("id")),
@@ -83,17 +74,16 @@ public class LogResource {
                     ));
                 }
             }
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
-        return logs;
+        } catch (Exception e) { e.printStackTrace(); }
+
+        return new LogResponse(logs, totalCount);
     }
 
-    // --- ELASTICSEARCH: SERVER-SIDE PAGINATION ---
+    // --- ELASTICSEARCH: ARAMA VE DETAY ---
     @GET
     @Path("/search")
     @Produces(MediaType.APPLICATION_JSON)
-    public List<LogData> searchLogs(
+    public LogResponse searchLogs(
             @QueryParam("term") String term,
             @QueryParam("page") @DefaultValue("1") int page,
             @QueryParam("size") @DefaultValue("10") int size) throws IOException {
@@ -101,9 +91,9 @@ public class LogResource {
         int offset = (page - 1) * size;
         List<LogData> results = new ArrayList<>();
 
-        // Elasticsearch Query DSL (from ve size eklendi)
+        // track_total_hits: true -> Gerçek toplam sayıyı almak için şarttır
         String query = String.format(
-                "{\"from\": %d, \"size\": %d, \"query\": {\"multi_match\": {\"query\": \"%s\", \"fields\": [\"mesaj\", \"sebep\", \"kaynak\"]}}}",
+                "{\"from\": %d, \"size\": %d, \"track_total_hits\": true, \"query\": {\"multi_match\": {\"query\": \"%s\", \"fields\": [\"mesaj\", \"sebep\", \"kaynak\"]}}}",
                 offset, size, term
         );
 
@@ -112,41 +102,116 @@ public class LogResource {
 
         org.elasticsearch.client.Response response = restClient.performRequest(request);
         JsonNode rootNode = objectMapper.readTree(response.getEntity().getContent());
-        JsonNode hits = rootNode.path("hits").path("hits");
 
+        // Toplam sayıyı çekiyoruz
+        long totalHits = rootNode.path("hits").path("total").path("value").asLong();
+
+        JsonNode hits = rootNode.path("hits").path("hits");
         for (JsonNode hit : hits) {
             JsonNode source = hit.path("_source");
-            results.add(new LogData(
-                    UUID.fromString(source.path("id").asText()),
-                    source.path("zaman").asText(),
-                    source.path("kaynak").asText(),
-                    source.path("sebep").asText(),
-                    source.path("mesaj").asText(),
-                    source.path("ip").asText()
-            ));
+            results.add(mapJsonToLog(source));
         }
-        return results;
+
+        return new LogResponse(results, totalHits);
     }
 
-    // --- YAZMA İŞLEMİ (Aynı kalıyor) ---
+    // --- ELASTICSEARCH: ID İLE TEKİL LOG GETİRME (Detay Modalı İçin) ---
+    @GET
+    @Path("/{id}")
+    @Produces(MediaType.APPLICATION_JSON)
+    public LogData getLogById(@PathParam("id") String id) throws IOException {
+        System.out.println(">>> DETAY İSTEĞİ GELDİ! Elasticsearch ID: " + id + " aranıyor...");
+        // ID keyword eşleşmesi yapıyoruz
+        String query = String.format("{\"query\": {\"term\": {\"id.keyword\": \"%s\"}}}", id);
+
+        Request request = new Request("POST", "/logs/_search");
+        request.setJsonEntity(query);
+
+        org.elasticsearch.client.Response response = restClient.performRequest(request);
+        JsonNode rootNode = objectMapper.readTree(response.getEntity().getContent());
+        JsonNode hit = rootNode.path("hits").path("hits").get(0);
+
+        if (hit != null) {
+            return mapJsonToLog(hit.path("_source"));
+        }
+        return null;
+    }
+    // ... Diğer metodların altına ekle ...
+
+    @GET
+    @Path("/stats")
+    @Produces(MediaType.APPLICATION_JSON)
+    public DashboardResponse getDashboardStats() {
+        List<StatDTO> kaynakList = new ArrayList<>();
+        List<StatDTO> hataList = new ArrayList<>();
+
+        // 1. Kaynak Dağılımı (Tüm zamanlar)
+        String sqlKaynak = "SELECT kaynak, count() as toplam FROM log_data GROUP BY kaynak";
+
+        // 2. Hata Dağılımı (Sonraki aşamada zaman filtresi ekleyebiliriz)
+        // Sadece hataları (SUCCESS olmayanları) getir
+        String sqlHata = "SELECT sebep, count() as toplam FROM log_data WHERE sebep != 'SUCCESS' GROUP BY sebep";
+
+        try (Connection conn = dataSource.getConnection()) {
+
+            // Kaynakları Çek
+            try (PreparedStatement ps = conn.prepareStatement(sqlKaynak);
+                 ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    kaynakList.add(new StatDTO(rs.getString("kaynak"), rs.getLong("toplam")));
+                }
+            }
+
+            // Hataları Çek
+            try (PreparedStatement ps = conn.prepareStatement(sqlHata);
+                 ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    hataList.add(new StatDTO(rs.getString("sebep"), rs.getLong("toplam")));
+                }
+            }
+
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+
+        return new DashboardResponse(kaynakList, hataList);
+    }
+
+    // --- YAZMA İŞLEMİ (DÜZELTİLDİ) ---
     @POST
     @Consumes(MediaType.APPLICATION_JSON)
     @Produces(MediaType.APPLICATION_JSON)
     public Response addLog(LogData log) {
-        // ... (Burası değişmedi, aynı kalacak)
+        // Hata Düzeltmesi: ID yoksa oluşturup nesneye geri set ediyoruz
+        if (log.getId() == null) {
+            log.setId(UUID.randomUUID());
+        }
+
         String sql = "INSERT INTO log_data (id, zaman, kaynak, sebep, mesaj, ip) VALUES (?, ?, ?, ?, ?, ?)";
         try (Connection conn = dataSource.getConnection();
              PreparedStatement ps = conn.prepareStatement(sql)) {
-            ps.setString(1, log.getId() != null ? log.getId().toString() : UUID.randomUUID().toString());
+            ps.setString(1, log.getId().toString());
             ps.setString(2, log.getZaman());
             ps.setString(3, log.getKaynak());
             ps.setString(4, log.getSebep());
             ps.setString(5, log.getMesaj());
             ps.setString(6, log.getIp());
             ps.executeUpdate();
-            return Response.ok(log).build();
+            return Response.ok(log).build(); // Artık dönen JSON'da ID var!
         } catch (SQLException e) {
             return Response.status(Response.Status.INTERNAL_SERVER_ERROR).entity(e.getMessage()).build();
         }
+    }
+
+    // JSON'dan Nesneye Dönüştürme Yardımcısı
+    private LogData mapJsonToLog(JsonNode source) {
+        return new LogData(
+                UUID.fromString(source.path("id").asText()),
+                source.path("zaman").asText(),
+                source.path("kaynak").asText(),
+                source.path("sebep").asText(),
+                source.path("mesaj").asText(),
+                source.path("ip").asText()
+        );
     }
 }
