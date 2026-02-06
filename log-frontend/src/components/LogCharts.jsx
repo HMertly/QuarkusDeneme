@@ -5,7 +5,6 @@ import { Pie } from '@ant-design/plots';
 
 const LogCharts = ({ stats, isDarkMode, onSliceClick }) => {
 
-    // Tema ayarları
     const textColor = isDarkMode ? 'rgba(255, 255, 255, 0.85)' : 'rgba(0, 0, 0, 0.85)';
 
     const commonConfig = {
@@ -27,7 +26,7 @@ const LogCharts = ({ stats, isDarkMode, onSliceClick }) => {
             connector: true,
             transform: [{ type: 'overlapDodgeY' }],
         },
-        // Tıklama Olayı (Buradan üst bileşene haber vereceğiz)
+
         onReady: (plot) => {
             plot.on('click', (event) => {
                 const data = event?.data?.data;
@@ -41,6 +40,12 @@ const LogCharts = ({ stats, isDarkMode, onSliceClick }) => {
         theme: isDarkMode ? 'classicDark' : 'classic',
     };
 
+    const NoData = () => (
+        <div className="chart-no-data" style={{ color: textColor }}>
+            Veri Yok
+        </div>
+    );
+
     return (
         <Row gutter={16} style={{ marginBottom: 24 }}>
             <Col span={12}>
@@ -52,7 +57,7 @@ const LogCharts = ({ stats, isDarkMode, onSliceClick }) => {
                             height={250}
                             key={isDarkMode ? 'source-dark' : 'source-light'}
                         />
-                    ) : <div style={{height: 250, textAlign: 'center', paddingTop: 100, color: textColor}}>Veri Yok</div>}
+                    ) : <NoData />}
                 </Card>
             </Col>
             <Col span={12}>
@@ -64,7 +69,7 @@ const LogCharts = ({ stats, isDarkMode, onSliceClick }) => {
                             height={250}
                             key={isDarkMode ? 'error-dark' : 'error-light'}
                         />
-                    ) : <div style={{height: 250, textAlign: 'center', paddingTop: 100, color: textColor}}>Veri Yok</div>}
+                    ) : <NoData />}
                 </Card>
             </Col>
         </Row>

@@ -4,6 +4,8 @@ import { logService } from './services/logService';
 import LogCharts from './components/LogCharts';
 import LogTable from './components/LogTable';
 import LogDetailModal from './components/LogDetailModal';
+import { UI_COLORS, SEARCH_MODES } from './constants';
+import './App.css';
 
 const { defaultAlgorithm, darkAlgorithm } = theme;
 
@@ -13,7 +15,7 @@ const App = () => {
     const [stats, setStats] = useState({ kaynakDagilimi: [], hataDagilimi: [] });
     const [loading, setLoading] = useState(false);
     const [isDarkMode, setIsDarkMode] = useState(false);
-    const [searchMode, setSearchMode] = useState('ClickHouse');
+    const [searchMode, setSearchMode] = useState(SEARCH_MODES.CLICKHOUSE);
     const [pagination, setPagination] = useState({ current: 1, pageSize: 10, total: 0 });
     const [searchTerm, setSearchTerm] = useState("");
 
@@ -38,7 +40,8 @@ const App = () => {
             const data = await logService.getLogs(page, size, term);
             setLogs(data.data);
             setPagination({ current: page, pageSize: size, total: data.totalCount });
-            setSearchMode(term ? 'Elasticsearch (Arama)' : 'ClickHouse (Liste)');
+            // Constants dosyasından gelen sabitleri kullanıyoruz
+            setSearchMode(term ? SEARCH_MODES.ELASTIC : SEARCH_MODES.CLICKHOUSE);
         } catch (error) {
             message.error('Veri çekilemedi!');
         } finally {
@@ -72,12 +75,20 @@ const App = () => {
         loadLogs(1, 10, value);
     };
 
+    // Toast mesajının üst üste binmesini engelleyen yeni fonksiyon
     const handleSliceClick = (name) => {
-        message.success(`${name} kayıtları filtreleniyor...`);
+        message.open({
+            type: 'success',
+            content: `${name} kayıtları filtreleniyor...`,
+            key: 'filter_toast', // Bu key sayesinde mesajlar birikmez
+            duration: 2,
+        });
+
         setSearchTerm(name);
         loadLogs(1, 10, name);
     };
 
+    // EKSİK OLAN FONKSİYONLAR BURADA:
     const handleTableChange = (newPagination) => {
         loadLogs(newPagination.current, newPagination.pageSize, searchTerm);
     };
@@ -89,7 +100,10 @@ const App = () => {
 
     return (
         <ConfigProvider theme={{ algorithm: isDarkMode ? darkAlgorithm : defaultAlgorithm }}>
-            <div style={{ padding: '30px', backgroundColor: isDarkMode ? '#141414' : '#f0f2f5', minHeight: '100vh' }}>
+            <div
+                className="app-container"
+                style={{ backgroundColor: isDarkMode ? UI_COLORS.DARK_BG : UI_COLORS.LIGHT_BG }}
+            >
 
                 <LogCharts
                     stats={stats}

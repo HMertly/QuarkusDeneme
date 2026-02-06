@@ -1,5 +1,6 @@
 import React from 'react';
 import { Modal, Button, Descriptions, Tag, Spin } from 'antd';
+import { LOG_REASONS, UI_COLORS } from '../constants'; // Import
 
 const LogDetailModal = ({ visible, loading, log, onClose, isDarkMode }) => {
     return (
@@ -18,15 +19,15 @@ const LogDetailModal = ({ visible, loading, log, onClose, isDarkMode }) => {
                     <Descriptions.Item label="Zaman">{log.zaman}</Descriptions.Item>
                     <Descriptions.Item label="Kaynak"><Tag color="blue">{log.kaynak}</Tag></Descriptions.Item>
                     <Descriptions.Item label="Sebep">
-                        <Tag color={log.sebep === 'SUCCESS' ? 'green' : 'red'}>{log.sebep}</Tag>
+                        <Tag color={log.sebep === LOG_REASONS.SUCCESS ? 'green' : 'red'}>{log.sebep}</Tag>
                     </Descriptions.Item>
                     <Descriptions.Item label="Mesaj">
-                        <div style={{
-                            padding: 15,
-                            background: isDarkMode ? '#333' : '#f5f5f5',
-                            borderRadius: 4,
-                            fontFamily: 'monospace'
-                        }}>
+                        <div
+                            className="log-message-box"
+                            style={{
+                                backgroundColor: isDarkMode ? UI_COLORS.CODE_DARK : UI_COLORS.CODE_LIGHT
+                            }}
+                        >
                             {log.mesaj}
                         </div>
                     </Descriptions.Item>

@@ -1,0 +1,27 @@
+/* Ana Konteyner */
+.app-container {
+    padding: 30px;
+    min-height: 100vh;
+    transition: background-color 0.3s ease; /* Tema geçişi yumuşak olsun */
+}
+
+/* Tablo Kartı */
+.table-card {
+    box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+}
+
+/* Grafik "Veri Yok" Alanı */
+.chart-no-data {
+    height: 250px;
+    text-align: center;
+    padding-top: 100px;
+}
+
+/* Detay Modal'ındaki Kod Bloğu */
+.log-message-box {
+    padding: 15px;
+    border-radius: 4px;
+    font-family: 'Courier New', Courier, monospace; /* Daha güzel kod fontu */
+    white-space: pre-wrap; /* Uzun satırlar alt satıra geçsin */
+    word-break: break-all;
+}
